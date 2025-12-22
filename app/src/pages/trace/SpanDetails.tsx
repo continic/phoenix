@@ -1414,21 +1414,36 @@ function DocumentItem({
 /**
  * Extracts the actual content from a message's content field.
  * Handles different formats:
- * - String: returns as-is
+ * - Plain string: returns as-is
+ * - JSON string: parses and processes
  * - Array with tool-result items (e.g., Vercel AI SDK format): extracts output.value
  * - Other objects: JSON stringifies them
  */
 function extractMessageContent(
   rawContent: unknown
 ): string | undefined {
+  // Try to parse if it's a JSON string
+  let content = rawContent;
   if (typeof rawContent === "string") {
-    return rawContent;
+    // Check if it looks like JSON (starts with [ or {)
+    const trimmed = rawContent.trim();
+    if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
+      try {
+        content = JSON.parse(rawContent);
+      } catch {
+        // Not valid JSON, return as plain string
+        return rawContent;
+      }
+    } else {
+      // Plain string, return as-is
+      return rawContent;
+    }
   }
 
   // Handle content as array (e.g., Vercel AI SDK tool-result format)
   // Format: [{ type: "tool-result", toolCallId: "...", output: { value: {...} } }]
-  if (Array.isArray(rawContent) && rawContent.length > 0) {
-    const firstItem = rawContent[0];
+  if (Array.isArray(content) && content.length > 0) {
+    const firstItem = content[0];
     if (
       firstItem &&
       typeof firstItem === "object" &&
@@ -1448,12 +1463,12 @@ function extractMessageContent(
         : JSON.stringify(output, null, 2);
     }
     // Other array formats, JSON stringify
-    return JSON.stringify(rawContent, null, 2);
+    return JSON.stringify(content, null, 2);
   }
 
   // Object format, JSON stringify
-  if (rawContent && typeof rawContent === "object") {
-    return JSON.stringify(rawContent, null, 2);
+  if (content && typeof content === "object") {
+    return JSON.stringify(content, null, 2);
   }
 
   return undefined;
