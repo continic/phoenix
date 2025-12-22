@@ -1411,8 +1411,60 @@ function DocumentItem({
   );
 }
 
+/**
+ * Extracts the actual content from a message's content field.
+ * Handles different formats:
+ * - String: returns as-is
+ * - Array with tool-result items (e.g., Vercel AI SDK format): extracts output.value
+ * - Other objects: JSON stringifies them
+ */
+function extractMessageContent(
+  rawContent: unknown
+): string | undefined {
+  if (typeof rawContent === "string") {
+    return rawContent;
+  }
+
+  // Handle content as array (e.g., Vercel AI SDK tool-result format)
+  // Format: [{ type: "tool-result", toolCallId: "...", output: { value: {...} } }]
+  if (Array.isArray(rawContent) && rawContent.length > 0) {
+    const firstItem = rawContent[0];
+    if (
+      firstItem &&
+      typeof firstItem === "object" &&
+      "type" in firstItem &&
+      firstItem.type === "tool-result" &&
+      "output" in firstItem
+    ) {
+      const output = firstItem.output as { value?: unknown } | unknown;
+      if (output && typeof output === "object" && "value" in output) {
+        const value = (output as { value: unknown }).value;
+        return typeof value === "string"
+          ? value
+          : JSON.stringify(value, null, 2);
+      }
+      return typeof output === "string"
+        ? output
+        : JSON.stringify(output, null, 2);
+    }
+    // Other array formats, JSON stringify
+    return JSON.stringify(rawContent, null, 2);
+  }
+
+  // Object format, JSON stringify
+  if (rawContent && typeof rawContent === "object") {
+    return JSON.stringify(rawContent, null, 2);
+  }
+
+  return undefined;
+}
+
 function LLMMessage({ message }: { message: AttributeMessage }) {
-  const messageContent = message[MessageAttributePostfixes.content];
+  const rawContent = message[MessageAttributePostfixes.content];
+  const messageContent = useMemo(
+    () => extractMessageContent(rawContent),
+    [rawContent]
+  );
   // as of multi-modal models, a message can also be a list
   const messagesContents = message[MessageAttributePostfixes.contents];
   const toolCalls = message[MessageAttributePostfixes.tool_calls]

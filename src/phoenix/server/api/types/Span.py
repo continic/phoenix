@@ -136,11 +136,33 @@ class Span(Node):
         info: Info[Context, None],
     ) -> str:
         if self.db_record:
-            return self.db_record.name
-        value = await info.context.data_loaders.span_fields.load(
-            (self.id, models.Span.name),
-        )
-        return str(value)
+            name = self.db_record.name
+            attributes = self.db_record.attributes
+        else:
+            name, attributes = await gather(
+                info.context.data_loaders.span_fields.load(
+                    (self.id, models.Span.name),
+                ),
+                info.context.data_loaders.span_fields.load(
+                    (self.id, models.Span.attributes),
+                ),
+            )
+            name = str(name)
+
+        # For ai.toolCall spans, extract the tool name from attributes
+        if name == "ai.toolCall":
+            # attributes can be dict or JSON string
+            if isinstance(attributes, str):
+                try:
+                    attributes = json.loads(attributes)
+                except (json.JSONDecodeError, TypeError):
+                    return name
+            if isinstance(attributes, dict):
+                tool_name = attributes.get("ai", {}).get("toolCall", {}).get("name")
+                if tool_name:
+                    return str(tool_name)
+
+        return name
 
     @strawberry.field
     async def status_code(
