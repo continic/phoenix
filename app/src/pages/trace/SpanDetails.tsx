@@ -1624,9 +1624,26 @@ function extractMessageContent(
     }
   }
 
-  // Handle content as array (e.g., Vercel AI SDK tool-result format)
-  // Format: [{ type: "tool-result", toolCallId: "...", output: { value: {...} } }]
+  // Handle content as array (e.g., Vercel AI SDK format)
   if (Array.isArray(content) && content.length > 0) {
+    // Check for text type items - extract and concatenate their text
+    // Format: [{ type: "text", text: "..." }, ...]
+    const textItems = content.filter(
+      (item): item is { type: "text"; text: string } =>
+        item &&
+        typeof item === "object" &&
+        "type" in item &&
+        item.type === "text" &&
+        "text" in item &&
+        typeof item.text === "string"
+    );
+    if (textItems.length > 0) {
+      // Extract text from all text items
+      return textItems.map((item) => item.text).join("\n\n");
+    }
+
+    // Handle tool-result type
+    // Format: [{ type: "tool-result", toolCallId: "...", output: { value: {...} } }]
     const firstItem = content[0];
     if (
       firstItem &&
@@ -1673,6 +1690,12 @@ function LLMMessage({
     () => extractMessageContent(rawContent),
     [rawContent]
   );
+  // Original content for copy (preserve original format)
+  const rawContentForCopy = useMemo(() => {
+    if (typeof rawContent === "string") return rawContent;
+    if (rawContent != null) return JSON.stringify(rawContent, null, 2);
+    return undefined;
+  }, [rawContent]);
   // as of multi-modal models, a message can also be a list
   const messagesContents = message[MessageAttributePostfixes.contents];
   // Extract text from messagesContents array if available
@@ -1689,6 +1712,14 @@ function LLMMessage({
   }, [messagesContents]);
   // Use fallbackContent when message content is empty
   const messageContent = extractedContent || contentsText || fallbackContent;
+  // Convert escaped \n to real newlines for display
+  const displayContent = useMemo(() => {
+    if (!messageContent) return undefined;
+    return messageContent
+      .replace(/\\n/g, "\n")
+      .replace(/\\t/g, "\t")
+      .replace(/\\r/g, "\r");
+  }, [messageContent]);
   const toolCalls = message[MessageAttributePostfixes.tool_calls]
     ?.map((obj) => obj[SemanticAttributePrefixes.tool_call])
     .filter(Boolean);
@@ -1727,7 +1758,7 @@ function LLMMessage({
           <Flex direction="row" gap="size-100" alignItems="center">
             <ConnectedMarkdownModeSelect />
             <CopyToClipboardButton
-              text={messageContent || JSON.stringify(message)}
+              text={rawContentForCopy || JSON.stringify(message)}
             />
           </Flex>
         }
@@ -1777,20 +1808,20 @@ function LLMMessage({
                   ) : null}
                 </DisclosureTrigger>
                 <DisclosurePanel>
-                  {messageContent ? (
+                  {displayContent ? (
                     <View width="100%">
                       <ConnectedMarkdownBlock>
-                        {messageContent}
+                        {displayContent}
                       </ConnectedMarkdownBlock>
                     </View>
                   ) : null}
                 </DisclosurePanel>
               </Disclosure>
             ) : // when the message is any other kind, just show the content without a disclosure
-            messageContent ? (
+            displayContent ? (
               <View width="100%">
                 <ConnectedMarkdownBlock>
-                  {messageContent}
+                  {displayContent}
                 </ConnectedMarkdownBlock>
               </View>
             ) : null}
@@ -1918,6 +1949,15 @@ function ToolCallWithResult({
     }
   }, [toolResult]);
 
+  // Convert escaped \n to real newlines for display only
+  const displayResult = useMemo(() => {
+    if (!parsedResult) return null;
+    return parsedResult
+      .replace(/\\n/g, "\n")
+      .replace(/\\t/g, "\t")
+      .replace(/\\r/g, "\r");
+  }, [parsedResult]);
+
   const titleEl = (
     <Flex direction="row" gap="size-100" alignItems="center">
       <SpanKindIcon spanKind="tool" />
@@ -1974,7 +2014,7 @@ function ToolCallWithResult({
             <Text color="text-700" size="S" weight="heavy">
               Result
             </Text>
-            {parsedResult ? (
+            {displayResult ? (
               <pre
                 css={css`
                   margin: 0;
@@ -1982,7 +2022,7 @@ function ToolCallWithResult({
                   font-size: var(--ac-global-dimension-static-font-size-75);
                 `}
               >
-                {parsedResult}
+                {displayResult}
               </pre>
             ) : (
               <Text color="text-500" size="S">
@@ -2492,6 +2532,31 @@ function CopyToClipboard({
   );
 }
 /**
+ * Recursively process an object to unescape string values for display.
+ * Converts escaped \n, \t etc. in string values to actual characters.
+ */
+function unescapeStringValues(obj: unknown): unknown {
+  if (typeof obj === "string") {
+    // Unescape common escape sequences in string values
+    return obj
+      .replace(/\\n/g, "\n")
+      .replace(/\\t/g, "\t")
+      .replace(/\\r/g, "\r");
+  }
+  if (Array.isArray(obj)) {
+    return obj.map(unescapeStringValues);
+  }
+  if (obj !== null && typeof obj === "object") {
+    const result: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(obj)) {
+      result[key] = unescapeStringValues(value);
+    }
+    return result;
+  }
+  return obj;
+}
+
+/**
  * A block of JSON content that is not editable.
  */
 function JSONBlock({
@@ -2509,8 +2574,12 @@ function JSONBlock({
     try {
       // Attempt to pretty print the JSON. This may fail if the JSON is invalid.
       // E.g. sometimes it contains NANs due to poor JSON.dumps in the backend
+      const parsed = JSON.parse(children);
+      // Unescape string values for better readability
+      // This converts \n, \t etc. in strings to actual newlines/tabs
+      const unescaped = unescapeStringValues(parsed);
       return {
-        value: JSON.stringify(JSON.parse(children), null, 2),
+        value: JSON.stringify(unescaped, null, 2),
         mimeType: "json" as const,
       };
     } catch (_e) {
