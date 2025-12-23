@@ -293,13 +293,14 @@ export function SpanDetails({
     const startTime = spanStartTime - 5 * 60 * 1000; // 5 minutes before
     const endTime = spanStartTime + 25 * 60 * 1000; // 25 minutes after
 
-    // Format start time as YYYY/MM/DD HH:mm:ss
-    const startDate = new Date(startTime);
-    const startText = encodeURIComponent(
-      `${startDate.getFullYear()}/${String(startDate.getMonth() + 1).padStart(2, "0")}/${String(startDate.getDate()).padStart(2, "0")} ${String(startDate.getHours()).padStart(2, "0")}:${String(startDate.getMinutes()).padStart(2, "0")}:${String(startDate.getSeconds()).padStart(2, "0")}`
-    );
+    // Format time as YYYY/MM/DD HH:mm:ss
+    const formatDateTime = (date: Date) =>
+      `${date.getFullYear()}/${String(date.getMonth() + 1).padStart(2, "0")}/${String(date.getDate()).padStart(2, "0")} ${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}:${String(date.getSeconds()).padStart(2, "0")}`;
 
-    return `https://railway.com/project/${projectId}/logs?environmentId=${environmentId}&filter=${filter}&start=${startTime}&startText=${startText}&end=${endTime}&endText=30m`;
+    const startText = encodeURIComponent(formatDateTime(new Date(startTime)));
+    const endText = encodeURIComponent(formatDateTime(new Date(endTime)));
+
+    return `https://railway.com/project/${projectId}/logs?environmentId=${environmentId}&filter=${filter}&start=${startTime}&startText=${startText}&end=${endTime}&endText=${endText}`;
   }, [requestId, span.startTime]);
 
   return (
