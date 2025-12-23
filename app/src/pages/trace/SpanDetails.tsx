@@ -1717,15 +1717,8 @@ function LLMMessage({
             {role.toLowerCase() === "system" && messageContent ? (
               <span style={{ fontWeight: "normal", opacity: 0.7 }}>
                 {"  "}
-                {(() => {
-                  // Check if content contains Chinese characters
-                  const hasChinese = /[\u4e00-\u9fff]/.test(messageContent);
-                  const limit = hasChinese ? 40 : 100;
-                  const preview = messageContent
-                    .substring(0, limit)
-                    .replace(/\n/g, " ");
-                  return preview + (messageContent.length > limit ? "..." : "");
-                })()}
+                {messageContent.substring(0, 80).replace(/\n/g, " ")}
+                {messageContent.length > 80 ? "..." : ""}
               </span>
             ) : null}
           </span>
