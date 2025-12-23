@@ -352,6 +352,119 @@ type ProviderToToolDefinitionMap = {
 };
 
 /**
+ * Try to extract OpenAI tool structure from an unknown tool definition
+ * without strict JSON Schema validation.
+ * This handles tools with complex JSON Schema features that fail strict validation.
+ */
+const tryExtractOpenAIToolDefinition = (
+  toolDefinition: unknown
+): OpenAIToolDefinition | null => {
+  if (!isObject(toolDefinition)) {
+    return null;
+  }
+
+  // Try OpenAI format: { type: "function", function: { name, description?, parameters } }
+  if (
+    "type" in toolDefinition &&
+    toolDefinition.type === "function" &&
+    "function" in toolDefinition &&
+    isObject(toolDefinition.function) &&
+    "name" in toolDefinition.function &&
+    typeof toolDefinition.function.name === "string"
+  ) {
+    const fn = toolDefinition.function;
+    return {
+      type: "function",
+      function: {
+        name: fn.name as string,
+        description:
+          "description" in fn && typeof fn.description === "string"
+            ? fn.description
+            : undefined,
+        parameters:
+          "parameters" in fn && isObject(fn.parameters)
+            ? (fn.parameters as OpenAIToolDefinition["function"]["parameters"])
+            : { type: "object", properties: {} },
+      },
+    };
+  }
+
+  // Try Anthropic format: { name, description, input_schema }
+  if (
+    "name" in toolDefinition &&
+    typeof toolDefinition.name === "string" &&
+    "input_schema" in toolDefinition &&
+    isObject(toolDefinition.input_schema)
+  ) {
+    return {
+      type: "function",
+      function: {
+        name: toolDefinition.name,
+        description:
+          "description" in toolDefinition &&
+          typeof toolDefinition.description === "string"
+            ? toolDefinition.description
+            : undefined,
+        parameters:
+          toolDefinition.input_schema as OpenAIToolDefinition["function"]["parameters"],
+      },
+    };
+  }
+
+  // Try Gemini format: { name, description?, parameters }
+  if (
+    "name" in toolDefinition &&
+    typeof toolDefinition.name === "string" &&
+    "parameters" in toolDefinition &&
+    isObject(toolDefinition.parameters)
+  ) {
+    return {
+      type: "function",
+      function: {
+        name: toolDefinition.name,
+        description:
+          "description" in toolDefinition &&
+          typeof toolDefinition.description === "string"
+            ? toolDefinition.description
+            : undefined,
+        parameters:
+          toolDefinition.parameters as OpenAIToolDefinition["function"]["parameters"],
+      },
+    };
+  }
+
+  // Try AWS format: { toolSpec: { name, description, inputSchema: { json } } }
+  if (
+    "toolSpec" in toolDefinition &&
+    isObject(toolDefinition.toolSpec) &&
+    "name" in toolDefinition.toolSpec &&
+    typeof toolDefinition.toolSpec.name === "string"
+  ) {
+    const spec = toolDefinition.toolSpec;
+    return {
+      type: "function",
+      function: {
+        name: spec.name as string,
+        description:
+          "description" in spec && typeof spec.description === "string"
+            ? spec.description
+            : undefined,
+        parameters:
+          "inputSchema" in spec &&
+          isObject(spec.inputSchema) &&
+          "json" in spec.inputSchema &&
+          isObject(spec.inputSchema.json)
+            ? (spec.inputSchema
+                .json as OpenAIToolDefinition["function"]["parameters"])
+            : { type: "object", properties: {} },
+      },
+    };
+  }
+
+  return null;
+};
+
+/**
  * Convert from any tool call format to OpenAI format if possible
  */
 export const toOpenAIToolDefinition = (
@@ -370,14 +483,18 @@ export const toOpenAIToolDefinition = (
     case "GOOGLE":
       return geminiToolToOpenAI.parse(validatedToolDefinition);
     case "UNKNOWN":
-      return null;
+      // Fallback: try to extract OpenAI structure without strict validation
+      // This handles tools with complex JSON Schema features that fail validation
+      return tryExtractOpenAIToolDefinition(toolDefinition);
     default:
       assertUnreachable(provider);
   }
 };
 
 /**
- * Convert from OpenAI tool call format to any other format
+ * Convert from OpenAI tool call format to any other format.
+ * This performs direct conversion without strict validation to support
+ * tools with complex JSON Schema features.
  */
 export const fromOpenAIToolDefinition = <T extends ModelProvider>({
   toolDefinition,
@@ -394,17 +511,32 @@ export const fromOpenAIToolDefinition = <T extends ModelProvider>({
     case "OLLAMA":
       return toolDefinition as ProviderToToolDefinitionMap[T];
     case "ANTHROPIC":
-      return openAIToolToAnthropic.parse(
-        toolDefinition
-      ) as ProviderToToolDefinitionMap[T];
+      // Direct conversion without Zod parse to support complex JSON Schema
+      return {
+        name: toolDefinition.function.name,
+        description:
+          toolDefinition.function.description ?? toolDefinition.function.name,
+        input_schema: toolDefinition.function.parameters,
+      } as ProviderToToolDefinitionMap[T];
     case "AWS":
-      return openAIToolToAws.parse(
-        toolDefinition
-      ) as ProviderToToolDefinitionMap[T];
+      // Direct conversion without Zod parse to support complex JSON Schema
+      return {
+        toolSpec: {
+          name: toolDefinition.function.name,
+          description:
+            toolDefinition.function.description ?? toolDefinition.function.name,
+          inputSchema: {
+            json: toolDefinition.function.parameters,
+          },
+        },
+      } as ProviderToToolDefinitionMap[T];
     case "GOOGLE":
-      return openAIToolToGemini.parse(
-        toolDefinition
-      ) as ProviderToToolDefinitionMap[T];
+      // Direct conversion without Zod parse to support complex JSON Schema
+      return {
+        name: toolDefinition.function.name,
+        description: toolDefinition.function.description,
+        parameters: toolDefinition.function.parameters,
+      } as ProviderToToolDefinitionMap[T];
     default:
       assertUnreachable(targetProvider);
   }

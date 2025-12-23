@@ -318,7 +318,7 @@ export function ExperimentRunFilterConditionField(
               padding-left: var(--ac-global-dimension-static-size-100);
               padding-right: var(--ac-global-dimension-static-size-100);
               border-radius: 0;
-              height: 36px !important;
+              height: 34px !important;
             `}
             className="button--reset"
           >

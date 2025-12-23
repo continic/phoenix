@@ -75,8 +75,8 @@ const staticCSS = css`
     --ac-global-static-color-black-300: rgba(0, 0, 0, 0.3);
 
     // component sizing
-    --ac-global-input-height-s: 30px;
-    --ac-global-input-height-m: 38px;
+    --ac-global-input-height-s: 28px;
+    --ac-global-input-height-m: 36px;
     --ac-global-button-height-s: var(--ac-global-input-height-s);
     --ac-global-button-height-m: var(--ac-global-input-height-m);
   }
@@ -120,19 +120,19 @@ const dimensionsCSS = css`
     --ac-global-dimension-static-size-4600: 368px;
     --ac-global-dimension-static-size-5000: 400px;
     --ac-global-dimension-static-size-6000: 480px;
-    --ac-global-dimension-static-font-size-50: 11px;
-    --ac-global-dimension-static-font-size-75: 12px;
-    --ac-global-dimension-static-font-size-100: 14px;
-    --ac-global-dimension-static-font-size-150: 15px;
-    --ac-global-dimension-static-font-size-200: 16px;
-    --ac-global-dimension-static-font-size-300: 18px;
-    --ac-global-dimension-static-font-size-400: 20px;
-    --ac-global-dimension-static-font-size-500: 22px;
-    --ac-global-dimension-static-font-size-600: 25px;
-    --ac-global-dimension-static-font-size-700: 28px;
-    --ac-global-dimension-static-font-size-800: 32px;
-    --ac-global-dimension-static-font-size-900: 36px;
-    --ac-global-dimension-static-font-size-1000: 40px;
+    --ac-global-dimension-static-font-size-50: 10px;
+    --ac-global-dimension-static-font-size-75: 11px;
+    --ac-global-dimension-static-font-size-100: 13px;
+    --ac-global-dimension-static-font-size-150: 14px;
+    --ac-global-dimension-static-font-size-200: 15px;
+    --ac-global-dimension-static-font-size-300: 17px;
+    --ac-global-dimension-static-font-size-400: 19px;
+    --ac-global-dimension-static-font-size-500: 21px;
+    --ac-global-dimension-static-font-size-600: 24px;
+    --ac-global-dimension-static-font-size-700: 27px;
+    --ac-global-dimension-static-font-size-800: 31px;
+    --ac-global-dimension-static-font-size-900: 35px;
+    --ac-global-dimension-static-font-size-1000: 39px;
     --ac-global-dimension-static-percent-50: 50%;
     --ac-global-dimension-static-percent-100: 100%;
     --ac-global-dimension-static-breakpoint-xsmall: 304px;
@@ -145,23 +145,23 @@ const dimensionsCSS = css`
     --ac-global-dimension-static-grid-fixed-max-width: 1280px;
 
     /* Font sizing */
-    --ac-global-dimension-font-size-25: 10px;
-    --ac-global-dimension-font-size-50: 11px;
-    --ac-global-dimension-font-size-75: 12px;
-    --ac-global-dimension-font-size-100: 14px;
-    --ac-global-dimension-font-size-150: 15px;
-    --ac-global-dimension-font-size-200: 16px;
-    --ac-global-dimension-font-size-300: 18px;
-    --ac-global-dimension-font-size-400: 20px;
-    --ac-global-dimension-font-size-500: 22px;
-    --ac-global-dimension-font-size-600: 25px;
-    --ac-global-dimension-font-size-700: 28px;
-    --ac-global-dimension-font-size-800: 32px;
-    --ac-global-dimension-font-size-900: 36px;
-    --ac-global-dimension-font-size-1000: 40px;
-    --ac-global-dimension-font-size-1100: 45px;
-    --ac-global-dimension-font-size-1200: 50px;
-    --ac-global-dimension-font-size-1300: 60px;
+    --ac-global-dimension-font-size-25: 9px;
+    --ac-global-dimension-font-size-50: 10px;
+    --ac-global-dimension-font-size-75: 11px;
+    --ac-global-dimension-font-size-100: 13px;
+    --ac-global-dimension-font-size-150: 14px;
+    --ac-global-dimension-font-size-200: 15px;
+    --ac-global-dimension-font-size-300: 17px;
+    --ac-global-dimension-font-size-400: 19px;
+    --ac-global-dimension-font-size-500: 21px;
+    --ac-global-dimension-font-size-600: 24px;
+    --ac-global-dimension-font-size-700: 27px;
+    --ac-global-dimension-font-size-800: 31px;
+    --ac-global-dimension-font-size-900: 35px;
+    --ac-global-dimension-font-size-1000: 39px;
+    --ac-global-dimension-font-size-1100: 44px;
+    --ac-global-dimension-font-size-1200: 49px;
+    --ac-global-dimension-font-size-1300: 59px;
   }
 `;
 
@@ -1095,7 +1095,7 @@ export const derivedCSS = (theme: ThemeContextType["theme"]) => css`
     --ac-global-grid-margin-xlarge: var(--ac-global-dimension-static-size-600);
 
     /* Aliases */
-    --ac-alias-single-line-height: var(--ac-global-dimension-size-400);
+    --ac-alias-single-line-height: 30px;
     --ac-alias-single-line-width: var(--ac-global-dimension-size-2400);
   }
 `;
@@ -1198,21 +1198,21 @@ const appGlobalStylesCSS = css`
     --ac-global-opacity-disabled: 0.6;
 
     /* Text */
-    --ac-global-font-size-xxs: 10px;
-    --ac-global-font-size-xs: 12px;
-    --ac-global-font-size-s: 14px;
-    --ac-global-font-size-m: 16px;
-    --ac-global-font-size-l: 18px;
-    --ac-global-font-size-xl: 24px;
-    --ac-global-font-size-xxl: 32px;
+    --ac-global-font-size-xxs: 9px;
+    --ac-global-font-size-xs: 11px;
+    --ac-global-font-size-s: 13px;
+    --ac-global-font-size-m: 15px;
+    --ac-global-font-size-l: 17px;
+    --ac-global-font-size-xl: 23px;
+    --ac-global-font-size-xxl: 31px;
 
-    --ac-global-line-height-xxs: 12px;
-    --ac-global-line-height-xs: 16px;
-    --ac-global-line-height-s: 20px;
-    --ac-global-line-height-m: 24px;
-    --ac-global-line-height-l: 28px;
-    --ac-global-line-height-xl: 36px;
-    --ac-global-line-height-xxl: 48px;
+    --ac-global-line-height-xxs: 11px;
+    --ac-global-line-height-xs: 15px;
+    --ac-global-line-height-s: 18px;
+    --ac-global-line-height-m: 22px;
+    --ac-global-line-height-l: 26px;
+    --ac-global-line-height-xl: 34px;
+    --ac-global-line-height-xxl: 46px;
 
     /* Fields */
     --ac-global-input-field-min-width: 100px;

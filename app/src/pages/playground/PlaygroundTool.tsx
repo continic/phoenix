@@ -136,6 +136,7 @@ export function PlaygroundTool({
   return (
     <Card
       collapsible
+      defaultOpen={false}
       backgroundColor={"yellow-100"}
       borderColor={"yellow-700"}
       title={

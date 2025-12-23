@@ -345,6 +345,7 @@ function SortableMessageItem({
     <li ref={setNodeRef} style={dragAndDropLiStyles}>
       <Card
         collapsible
+        defaultOpen={false}
         {...messageCardStyles}
         title={
           <div

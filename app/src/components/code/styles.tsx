@@ -2,7 +2,7 @@ import { css } from "@emotion/react";
 
 export const codeBlockWithCopyCSS = css`
   position: relative;
-  --code-block-min-height: 40px;
+  --code-block-min-height: 38px;
   min-height: var(--code-block-min-height);
   display: flex;
   flex-direction: row;

@@ -39,6 +39,7 @@ import {
   PlaygroundStore,
   Tool,
 } from "@phoenix/store/playground";
+import { convertInstanceToolsToProvider } from "@phoenix/store/playground/playgroundStoreUtils";
 import {
   assertUnreachable,
   isStringKeyedObject,
@@ -233,6 +234,8 @@ function processAttributeMessagesToChatMessage({
 
 /**
  * Attempts to parse the input messages from the span attributes.
+ * Priority 1: ai.prompt.messages (Vercel AI SDK format - JSON string)
+ * Priority 2: llm.input_messages (OpenInference format)
  * @param parsedAttributes the JSON parsed span attributes
  * @returns an object containing the parsed {@link ChatMessage|ChatMessages} and any parsing errors
  *
@@ -245,6 +248,143 @@ export function getTemplateMessagesFromAttributes({
   provider: ModelProvider;
   parsedAttributes: unknown;
 }) {
+  // Priority 1: Try ai.prompt.messages (Vercel AI SDK format - JSON string)
+  if (isStringKeyedObject(parsedAttributes)) {
+    const ai = parsedAttributes["ai"] as Record<string, unknown> | undefined;
+    const prompt = ai?.["prompt"] as Record<string, unknown> | undefined;
+    const aiPromptMessages = prompt?.["messages"];
+
+    if (typeof aiPromptMessages === "string") {
+      const { json: parsed } = safelyParseJSON(aiPromptMessages);
+      if (Array.isArray(parsed)) {
+        const messages = parsed.map(
+          (msg: {
+            role?: string;
+            content?: unknown;
+            toolCallId?: string;
+            toolCalls?: Array<{
+              toolCallId?: string;
+              toolName?: string;
+              args?: unknown;
+              input?: unknown;
+            }>;
+          }) => {
+            // Extract tool calls from msg.toolCalls (Vercel AI SDK format)
+            let toolCalls: MessageSchema["message"]["tool_calls"] | undefined;
+            if (Array.isArray(msg.toolCalls) && msg.toolCalls.length > 0) {
+              toolCalls = msg.toolCalls.map((tc) => {
+                // Vercel AI SDK can use either "args" or "input" for tool arguments
+                const toolArgs = tc.args ?? tc.input;
+                return {
+                  tool_call: {
+                    id: tc.toolCallId ?? "",
+                    function: {
+                      name: tc.toolName ?? "",
+                      arguments:
+                        typeof toolArgs === "string"
+                          ? toolArgs
+                          : JSON.stringify(toolArgs ?? {}),
+                    },
+                  },
+                };
+              });
+            }
+            // Also check content array for tool-call items
+            if (Array.isArray(msg.content)) {
+              const toolCallItems = msg.content.filter(
+                (item: { type?: string }) => item?.type === "tool-call"
+              );
+              if (toolCallItems.length > 0) {
+                toolCalls = toolCallItems.map(
+                  (tc: {
+                    toolCallId?: string;
+                    toolName?: string;
+                    args?: unknown;
+                    input?: unknown;
+                  }) => {
+                    // Vercel AI SDK can use either "args" or "input" for tool arguments
+                    const toolArgs = tc.args ?? tc.input;
+                    return {
+                      tool_call: {
+                        id: tc.toolCallId ?? "",
+                        function: {
+                          name: tc.toolName ?? "",
+                          arguments:
+                            typeof toolArgs === "string"
+                              ? toolArgs
+                              : JSON.stringify(toolArgs ?? {}),
+                        },
+                      },
+                    };
+                  }
+                );
+              }
+            }
+
+            // Extract text content and tool result info
+            let textContent: string | undefined;
+            let toolCallIdFromContent: string | undefined;
+
+            if (typeof msg.content === "string") {
+              textContent = msg.content;
+            } else if (Array.isArray(msg.content)) {
+              // Check for text content
+              const textItem = msg.content.find(
+                (item: { type?: string }) => item?.type === "text"
+              ) as { text?: string } | undefined;
+              textContent = textItem?.text;
+
+              // Check for tool-result content (for tool role messages)
+              const toolResultItem = msg.content.find(
+                (item: { type?: string }) => item?.type === "tool-result"
+              ) as {
+                toolCallId?: string;
+                toolName?: string;
+                output?: { type?: string; value?: unknown };
+                result?: unknown;
+              } | undefined;
+
+              if (toolResultItem) {
+                toolCallIdFromContent = toolResultItem.toolCallId;
+                // Extract content from tool result output
+                const outputValue =
+                  toolResultItem.output?.value ?? toolResultItem.result;
+                if (outputValue !== undefined) {
+                  textContent =
+                    typeof outputValue === "string"
+                      ? outputValue
+                      : JSON.stringify(outputValue, null, 2);
+                }
+              }
+            }
+
+            // Determine toolCallId - can be at message level or inside content
+            const finalToolCallId = msg.toolCallId ?? toolCallIdFromContent;
+
+            return {
+              id: generateMessageId(),
+              role:
+                finalToolCallId != null
+                  ? getChatRole("tool")
+                  : getChatRole(msg.role ?? "user"),
+              content: textContent,
+              toolCalls: processAttributeToolCalls({
+                provider,
+                toolCalls,
+              }),
+              toolCallId: finalToolCallId,
+            };
+          }
+        );
+        return {
+          messageParsingErrors: [],
+          messages,
+        };
+      }
+    }
+  }
+
+  // Priority 2: Fall back to llm.input_messages (OpenInference format)
   const inputMessages = llmInputMessageSchema.safeParse(parsedAttributes);
   if (!inputMessages.success) {
     return {
@@ -282,7 +422,10 @@ export function getTemplateMessagesFromAttributes({
 }
 
 /**
- * Attempts to get llm.output_messages then output.value from the span attributes.
+ * Attempts to get output from span attributes.
+ * Priority 1: ai.response (Vercel AI SDK format)
+ * Priority 2: llm.output_messages (OpenInference format)
+ * Priority 3: output.value
  * @param parsedAttributes the JSON parsed span attributes
  * @returns an object containing the parsed output and any parsing errors
  *
@@ -296,6 +439,58 @@ export function getOutputFromAttributes({
   parsedAttributes: unknown;
 }) {
   const outputParsingErrors: string[] = [];
+
+  // Priority 1: Try ai.response (Vercel AI SDK format)
+  if (isStringKeyedObject(parsedAttributes)) {
+    const ai = parsedAttributes["ai"] as Record<string, unknown> | undefined;
+    const response = ai?.["response"] as Record<string, unknown> | undefined;
+
+    if (response && (response.text || response.toolCalls)) {
+      // Parse toolCalls if present (it's a JSON string)
+      let toolCalls: ChatMessage["toolCalls"] | undefined;
+      if (typeof response.toolCalls === "string") {
+        const { json: parsedToolCalls } = safelyParseJSON(response.toolCalls);
+        if (Array.isArray(parsedToolCalls) && parsedToolCalls.length > 0) {
+          const toolCallsInOpenInferenceFormat = parsedToolCalls.map(
+            (tc: {
+              toolCallId?: string;
+              toolName?: string;
+              args?: unknown;
+            }) => ({
+              tool_call: {
+                id: tc.toolCallId ?? "",
+                function: {
+                  name: tc.toolName ?? "",
+                  arguments:
+                    typeof tc.args === "string"
+                      ? tc.args
+                      : JSON.stringify(tc.args ?? {}),
+                },
+              },
+            })
+          );
+          toolCalls = processAttributeToolCalls({
+            provider,
+            toolCalls: toolCallsInOpenInferenceFormat,
+          });
+        }
+      }
+
+      const assistantMessage: ChatMessage = {
+        id: generateMessageId(),
+        role: "ai",
+        content: typeof response.text === "string" ? response.text : undefined,
+        toolCalls,
+      };
+
+      return {
+        output: [assistantMessage],
+        outputParsingErrors,
+      };
+    }
+  }
+
+  // Priority 2: Fall back to llm.output_messages (OpenInference format)
   const outputMessages = llmOutputMessageSchema.safeParse(parsedAttributes);
   if (outputMessages.success) {
     return {
@@ -309,6 +504,7 @@ export function getOutputFromAttributes({
 
   outputParsingErrors.push(OUTPUT_MESSAGES_PARSING_ERROR);
 
+  // Priority 3: Fall back to output.value
   const parsedOutput = outputSchema.safeParse(parsedAttributes);
   if (parsedOutput.success) {
     return {
@@ -373,7 +569,9 @@ export function getModelProviderFromModelName(
 }
 
 /**
- * Attempts to get the llm.model_name, inferred provider, and invocation parameters from the span attributes.
+ * Attempts to get the model name and provider from span attributes.
+ * Priority 1: ai.model.id / ai.model.provider (Vercel AI SDK format)
+ * Priority 2: llm.model_name / llm.provider (OpenInference format)
  * @param parsedAttributes the JSON parsed span attributes
  * @returns the model config if it exists or parsing errors if it does not
  *
@@ -383,6 +581,47 @@ export function getBaseModelConfigFromAttributes(parsedAttributes: unknown): {
   modelConfig: ModelConfig | null;
   parsingErrors: string[];
 } {
+  // Priority 1: Try ai.model.id / ai.model.provider (Vercel AI SDK format)
+  if (isStringKeyedObject(parsedAttributes)) {
+    const ai = parsedAttributes["ai"] as Record<string, unknown> | undefined;
+    const aiModel = ai?.["model"] as Record<string, unknown> | undefined;
+    const aiModelId = aiModel?.["id"];
+    const aiModelProvider = aiModel?.["provider"];
+
+    if (typeof aiModelId === "string" && aiModelId) {
+      const provider =
+        openInferenceModelProviderToPhoenixModelProvider(
+          typeof aiModelProvider === "string" ? aiModelProvider : undefined
+        ) || getModelProviderFromModelName(aiModelId);
+      const { baseUrl } = getUrlInfoFromAttributes(parsedAttributes);
+      const azureConfig =
+        provider === "AZURE_OPENAI"
+          ? getAzureConfigFromAttributes(parsedAttributes)
+          : { deploymentName: null, apiVersion: null, endpoint: null };
+      const modelName =
+        provider === "AZURE_OPENAI" && azureConfig.deploymentName
+          ? azureConfig.deploymentName
+          : aiModelId;
+      return {
+        modelConfig: {
+          ...Object.fromEntries(
+            Object.entries({
+              baseUrl,
+              endpoint: azureConfig.endpoint,
+              apiVersion: azureConfig.apiVersion,
+            }).filter(([_, value]) => value !== null)
+          ),
+          modelName,
+          provider,
+          invocationParameters: [],
+          supportedInvocationParameters: [],
+        },
+        parsingErrors: [],
+      };
+    }
+  }
+
+  // Priority 2: Fall back to llm.model_name / llm.provider (OpenInference format)
   const { success, data } = modelConfigSchema.safeParse(parsedAttributes);
   if (success) {
     const provider =
@@ -569,7 +808,9 @@ function processAttributeTools(tools: LlmToolSchema): Tool[] {
 }
 
 /**
- * Attempts to get llm.tools from the span attributes.
+ * Attempts to get tools from span attributes.
+ * Priority 1: ai.prompt.tools (Vercel AI SDK format - JSON string)
+ * Priority 2: llm.tools (OpenInference format)
  * @param parsedAttributes the JSON parsed span attributes
  * @returns the tools from the span attributes
  *
@@ -580,6 +821,97 @@ export function getToolsFromAttributes(
 ):
   | { tools: Tool[]; parsingErrors: never[] }
   | { tools: null; parsingErrors: string[] } {
+  // Priority 1: Try ai.prompt.tools (Vercel AI SDK format)
+  // Can be either: an array of JSON strings, or a single JSON string
+  if (isStringKeyedObject(parsedAttributes)) {
+    const ai = parsedAttributes["ai"] as Record<string, unknown> | undefined;
+    const prompt = ai?.["prompt"] as Record<string, unknown> | undefined;
+    const aiPromptTools = prompt?.["tools"];
+
+    // Handle array of JSON strings (each tool is a separate JSON string)
+    if (Array.isArray(aiPromptTools) && aiPromptTools.length > 0) {
+      const tools: Tool[] = aiPromptTools
+        .map((toolStr: unknown) => {
+          if (typeof toolStr !== "string") return null;
+          const { json: tool } = safelyParseJSON(toolStr);
+          if (!tool || typeof tool !== "object") return null;
+          const toolObj = tool as {
+            type?: string;
+            name?: string;
+            description?: string;
+            parameters?: Record<string, unknown>;
+            inputSchema?: Record<string, unknown>;
+          };
+          if (!toolObj.name) return null;
+          // Convert to OpenAI tool format
+          // Vercel AI SDK uses "inputSchema" instead of "parameters"
+          const parameters = toolObj.inputSchema ?? toolObj.parameters ?? {};
+          const formattedParameters = {
+            type: "object" as const,
+            ...parameters,
+          };
+          return {
+            id: generateToolId(),
+            definition: {
+              type: "function" as const,
+              function: {
+                name: toolObj.name,
+                description: toolObj.description ?? "",
+                parameters: formattedParameters,
+              },
+            },
+          };
+        })
+        .filter((tool): tool is NonNullable<typeof tool> => tool != null);
+
+      if (tools.length > 0) {
+        return { tools, parsingErrors: [] as never[] };
+      }
+    }
+
+    // Handle single JSON string containing array of tools
+    if (typeof aiPromptTools === "string") {
+      const { json: parsedTools } = safelyParseJSON(aiPromptTools);
+      if (Array.isArray(parsedTools) && parsedTools.length > 0) {
+        const tools: Tool[] = parsedTools
+          .map(
+            (tool: {
+              type?: string;
+              name?: string;
+              description?: string;
+              parameters?: Record<string, unknown>;
+              inputSchema?: Record<string, unknown>;
+            }) => {
+              if (!tool.name) return null;
+              // Convert to OpenAI tool format
+              const parameters = tool.inputSchema ?? tool.parameters ?? {};
+              const formattedParameters = {
+                type: "object" as const,
+                ...parameters,
+              };
+              return {
+                id: generateToolId(),
+                definition: {
+                  type: "function" as const,
+                  function: {
+                    name: tool.name,
+                    description: tool.description ?? "",
+                    parameters: formattedParameters,
+                  },
+                },
+              };
+            }
+          )
+          .filter((tool): tool is NonNullable<typeof tool> => tool != null);
+
+        if (tools.length > 0) {
+          return { tools, parsingErrors: [] as never[] };
+        }
+      }
+    }
+  }
+
+  // Priority 2: Fall back to llm.tools (OpenInference format)
   const { data, success } = llmToolSchema.safeParse(parsedAttributes);
 
   if (!success) {
@@ -960,6 +1292,29 @@ export const getToolName = (tool: Tool): string | null => {
     case "GOOGLE":
       return validatedToolDefinition.name;
     case "UNKNOWN":
+      // Fallback: try to extract name directly without strict validation
+      // This handles tools with complex JSON schemas that fail validation
+      if (isStringKeyedObject(tool.definition)) {
+        // Cast to generic record to allow property access
+        const def = tool.definition as Record<string, unknown>;
+        // OpenAI format: { type: "function", function: { name: "..." } }
+        const fn = def["function"];
+        if (isStringKeyedObject(fn) && typeof fn["name"] === "string") {
+          return fn["name"];
+        }
+        // Anthropic/Gemini format: { name: "..." }
+        if (typeof def["name"] === "string") {
+          return def["name"];
+        }
+        // AWS format: { toolSpec: { name: "..." } }
+        const toolSpec = def["toolSpec"];
+        if (
+          isStringKeyedObject(toolSpec) &&
+          typeof toolSpec["name"] === "string"
+        ) {
+          return toolSpec["name"];
+        }
+      }
       return null;
     default:
       assertUnreachable(provider);
@@ -1193,7 +1548,10 @@ const getBaseChatCompletionInput = ({
       instance.model.modelName
     ),
     tools: instance.tools.length
-      ? instance.tools.map((tool) => tool.definition)
+      ? convertInstanceToolsToProvider({
+          instanceTools: instance.tools,
+          provider: instance.model.provider,
+        }).map((tool) => tool.definition)
       : undefined,
     credentials: getCredentials(credentials, instance.model.provider),
     promptName: instance.prompt?.name,

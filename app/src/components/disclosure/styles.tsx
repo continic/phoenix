@@ -86,8 +86,8 @@ export const disclosureCSS = css`
   }
 
   &[data-size="L"] .react-aria-Button[slot="trigger"] {
-    height: 48px;
-    max-height: 48px;
+    height: 44px;
+    max-height: 44px;
   }
 
   &[data-expanded] .react-aria-Button[slot="trigger"] {
