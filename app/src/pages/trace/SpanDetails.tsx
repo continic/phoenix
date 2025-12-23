@@ -1,4 +1,11 @@
-import { PropsWithChildren, ReactNode, Suspense, useMemo, useRef } from "react";
+import {
+  Fragment,
+  PropsWithChildren,
+  ReactNode,
+  Suspense,
+  useMemo,
+  useRef,
+} from "react";
 import { useHotkeys } from "react-hotkeys-hook";
 import { graphql, useLazyLoadQuery } from "react-relay";
 import {
@@ -91,6 +98,7 @@ import {
   AttributeReranker,
   AttributeRetrieval,
   AttributeTool,
+  AttributeToolCall,
   isAttributeMessages,
 } from "@phoenix/openInference/tracing/types";
 import { assertUnreachable, isStringArray } from "@phoenix/typeUtils";
@@ -540,7 +548,7 @@ function SpanInfo({ span }: { span: Span }) {
         {statusDescription}
         {content}
         {attributesObject?.metadata ? (
-          <Card {...defaultCardProps} title="Metadata">
+          <Card {...defaultCardProps} defaultOpen={false} title="Metadata">
             <JSONBlock>{JSON.stringify(attributesObject.metadata)}</JSONBlock>
           </Card>
         ) : null}
@@ -609,6 +617,23 @@ function LLMSpanInfo(props: { span: Span; spanAttributes: AttributeObject }) {
     }, [] as string[]);
   }, [llmTools]);
 
+  // Support for AI SDK format: ai.prompt.tools
+  const aiPromptTools = useMemo<string[]>(() => {
+    const attrs = spanAttributes as Record<string, unknown>;
+    const ai = attrs["ai"] as Record<string, unknown> | undefined;
+    const prompt = ai?.["prompt"] as Record<string, unknown> | undefined;
+    const tools = prompt?.["tools"];
+    if (Array.isArray(tools)) {
+      return tools.filter((t): t is string => typeof t === "string");
+    }
+    return [];
+  }, [spanAttributes]);
+
+  // Combine both tool sources
+  const allToolSchemas = useMemo<string[]>(() => {
+    return [...llmToolSchemas, ...aiPromptTools];
+  }, [llmToolSchemas, aiPromptTools]);
+
   const outputMessages = useMemo<AttributeMessage[]>(() => {
     if (llmAttributes == null) {
       return [];
@@ -624,6 +649,11 @@ function LLMSpanInfo(props: { span: Span; spanAttributes: AttributeObject }) {
       .map((obj) => obj[SemanticAttributePrefixes.message])
       .filter(Boolean) || []) as AttributeMessage[];
   }, [llmAttributes]);
+
+  // Combine input and output messages for cross-referencing tool results
+  const allMessages = useMemo<AttributeMessage[]>(() => {
+    return [...inputMessages, ...outputMessages];
+  }, [inputMessages, outputMessages]);
 
   const prompts = useMemo<string[]>(() => {
     if (llmAttributes == null) {
@@ -680,7 +710,6 @@ function LLMSpanInfo(props: { span: Span; spanAttributes: AttributeObject }) {
   }, [modelName, provider]);
   const hasInput = input != null && input.value != null;
   const hasInputMessages = inputMessages.length > 0;
-  const hasLLMToolSchemas = llmToolSchemas.length > 0;
   const hasOutput = output != null && output.value != null;
   const hasOutputMessages = outputMessages.length > 0;
   const hasPrompts = prompts.length > 0;
@@ -701,7 +730,6 @@ function LLMSpanInfo(props: { span: Span; spanAttributes: AttributeObject }) {
         <Tabs>
           <TabList>
             {hasInputMessages && <Tab id="input-messages">Input Messages</Tab>}
-            {hasLLMToolSchemas && <Tab id="tools">Tools</Tab>}
             {hasInput && <Tab id="input">Input</Tab>}
             {hasPromptTemplateObject && (
               <Tab id="prompt-template">Prompt Template</Tab>
@@ -714,13 +742,11 @@ function LLMSpanInfo(props: { span: Span; spanAttributes: AttributeObject }) {
 
           {hasInputMessages && (
             <LazyTabPanel id="input-messages">
-              <LLMMessagesList messages={inputMessages} />
-            </LazyTabPanel>
-          )}
-
-          {hasLLMToolSchemas && (
-            <LazyTabPanel id="tools">
-              <LLMToolSchemasList toolSchemas={llmToolSchemas} />
+              <LLMMessagesList
+                messages={inputMessages}
+                toolSchemas={allToolSchemas}
+                allMessages={allMessages}
+              />
             </LazyTabPanel>
           )}
 
@@ -820,7 +846,11 @@ function LLMSpanInfo(props: { span: Span; spanAttributes: AttributeObject }) {
 
             {hasOutputMessages && (
               <LazyTabPanel id="output-messages">
-                <LLMMessagesList messages={outputMessages} />
+                <LLMMessagesList
+                  messages={outputMessages}
+                  allMessages={allMessages}
+                  spanOutput={output}
+                />
               </LazyTabPanel>
             )}
             {hasOutput && (
@@ -1027,7 +1057,6 @@ function RerankerSpanInfo(props: {
         title={"Input Documents"}
         titleExtra={<Counter>{numInputDocuments}</Counter>}
         {...defaultCardProps}
-        defaultOpen={false}
       >
         {
           <ul
@@ -1474,14 +1503,37 @@ function extractMessageContent(
   return undefined;
 }
 
-function LLMMessage({ message }: { message: AttributeMessage }) {
+function LLMMessage({
+  message,
+  hideToolCalls = false,
+  fallbackContent,
+}: {
+  message: AttributeMessage;
+  hideToolCalls?: boolean;
+  /** Fallback content to show when message content is empty (e.g., LLM output for assistant) */
+  fallbackContent?: string;
+}) {
   const rawContent = message[MessageAttributePostfixes.content];
-  const messageContent = useMemo(
+  const extractedContent = useMemo(
     () => extractMessageContent(rawContent),
     [rawContent]
   );
   // as of multi-modal models, a message can also be a list
   const messagesContents = message[MessageAttributePostfixes.contents];
+  // Extract text from messagesContents array if available
+  const contentsText = useMemo(() => {
+    if (!messagesContents || !Array.isArray(messagesContents)) return undefined;
+    // Find text content from the array
+    for (const item of messagesContents) {
+      const messageContent = item?.message_content;
+      if (messageContent?.type === "text" && typeof messageContent?.text === "string") {
+        return messageContent.text;
+      }
+    }
+    return undefined;
+  }, [messagesContents]);
+  // Use fallbackContent when message content is empty
+  const messageContent = extractedContent || contentsText || fallbackContent;
   const toolCalls = message[MessageAttributePostfixes.tool_calls]
     ?.map((obj) => obj[SemanticAttributePrefixes.tool_call])
     .filter(Boolean);
@@ -1500,11 +1552,28 @@ function LLMMessage({ message }: { message: AttributeMessage }) {
       <Card
         {...defaultCardProps}
         {...messageStyles}
+        defaultOpen={false}
         title={
-          role +
-          (message[MessageAttributePostfixes.name]
-            ? `: ${message[MessageAttributePostfixes.name]}`
-            : "")
+          <span>
+            {role}
+            {message[MessageAttributePostfixes.name]
+              ? `: ${message[MessageAttributePostfixes.name]}`
+              : ""}
+            {role.toLowerCase() === "system" && messageContent ? (
+              <span style={{ fontWeight: "normal", opacity: 0.7 }}>
+                {"  "}
+                {(() => {
+                  // Check if content contains Chinese characters
+                  const hasChinese = /[\u4e00-\u9fff]/.test(messageContent);
+                  const limit = hasChinese ? 40 : 100;
+                  const preview = messageContent
+                    .substring(0, limit)
+                    .replace(/\n/g, " ");
+                  return preview + (messageContent.length > limit ? "..." : "");
+                })()}
+              </span>
+            ) : null}
+          </span>
         }
         extra={
           <Flex direction="row" gap="size-100" alignItems="center">
@@ -1577,7 +1646,7 @@ function LLMMessage({ message }: { message: AttributeMessage }) {
                 </ConnectedMarkdownBlock>
               </View>
             ) : null}
-            {(toolCalls?.length ?? 0) > 0
+            {!hideToolCalls && (toolCalls?.length ?? 0) > 0
               ? toolCalls?.map((toolCall, idx) => {
                   if (!toolCall) {
                     return null;
@@ -1667,6 +1736,118 @@ function LLMMessage({ message }: { message: AttributeMessage }) {
   );
 }
 
+/**
+ * Component to display a tool call with its result merged together
+ */
+function ToolCallWithResult({
+  toolCall,
+  toolResult,
+}: {
+  toolCall: AttributeToolCall;
+  toolResult?: string;
+}) {
+  const toolName = toolCall?.function?.name || "Unknown Tool";
+  const toolCallId = toolCall?.id;
+  const args = toolCall?.function?.arguments;
+
+  // Try to parse arguments as JSON for pretty display
+  const parsedArgs = useMemo(() => {
+    if (!args) return null;
+    try {
+      return JSON.stringify(JSON.parse(args), null, 2);
+    } catch {
+      return args;
+    }
+  }, [args]);
+
+  // Try to parse result as JSON for pretty display
+  const parsedResult = useMemo(() => {
+    if (!toolResult) return null;
+    try {
+      return JSON.stringify(JSON.parse(toolResult), null, 2);
+    } catch {
+      return toolResult;
+    }
+  }, [toolResult]);
+
+  const titleEl = (
+    <Flex direction="row" gap="size-100" alignItems="center">
+      <SpanKindIcon spanKind="tool" />
+      <Text weight="heavy">{toolName}</Text>
+      {toolCallId && (
+        <Text color="text-700" size="S">
+          {toolCallId}
+        </Text>
+      )}
+    </Flex>
+  );
+
+  return (
+    <Card
+      {...defaultCardProps}
+      defaultOpen={false}
+      backgroundColor="yellow-100"
+      borderColor="yellow-700"
+      title={titleEl}
+      extra={
+        <CopyToClipboardButton
+          text={JSON.stringify({ call: args, result: toolResult }, null, 2)}
+        />
+      }
+    >
+      <Flex direction="column" gap="size-100">
+        {/* Tool Call Arguments */}
+        <View
+          paddingX="size-200"
+          paddingY="size-100"
+          borderBottomColor="yellow-700"
+          borderBottomWidth="thin"
+        >
+          <Flex direction="column" gap="size-50">
+            <Text color="text-700" size="S" weight="heavy">
+              Call
+            </Text>
+            {parsedArgs && (
+              <pre
+                css={css`
+                  margin: 0;
+                  text-wrap: wrap;
+                  font-size: var(--ac-global-dimension-static-font-size-75);
+                `}
+              >
+                {parsedArgs}
+              </pre>
+            )}
+          </Flex>
+        </View>
+        {/* Tool Result */}
+        <View paddingX="size-200" paddingY="size-100">
+          <Flex direction="column" gap="size-50">
+            <Text color="text-700" size="S" weight="heavy">
+              Result
+            </Text>
+            {parsedResult ? (
+              <pre
+                css={css`
+                  margin: 0;
+                  text-wrap: wrap;
+                  font-size: var(--ac-global-dimension-static-font-size-75);
+                `}
+              >
+                {parsedResult}
+              </pre>
+            ) : (
+              <Text color="text-500" size="S">
+                No result
+              </Text>
+            )}
+          </Flex>
+        </View>
+      </Flex>
+    </Card>
+  );
+}
+
 function LLMToolSchema({
   toolSchema,
   index,
@@ -1674,18 +1855,39 @@ function LLMToolSchema({
   toolSchema: string;
   index: number;
 }) {
+  // Try to parse the tool schema to extract name and description
+  const parsedTool = useMemo(() => {
+    try {
+      const parsed = JSON.parse(toolSchema);
+      // Handle different tool schema formats
+      const name = parsed?.name || parsed?.function?.name || `Tool #${index + 1}`;
+      const description =
+        parsed?.description || parsed?.function?.description || parsed?.inputSchema?.description;
+      return { name, description, parsed };
+    } catch {
+      return { name: `Tool #${index + 1}`, description: undefined, parsed: null };
+    }
+  }, [toolSchema, index]);
+
   const titleEl = (
     <Flex direction="row" gap="size-100" alignItems="center">
       <SpanKindIcon spanKind="tool" />
-      <Text weight="heavy">Tool</Text>
+      <Text weight="heavy">{parsedTool.name}</Text>
+      {parsedTool.description && (
+        <Text color="text-700" size="S">
+          {parsedTool.description.length > 100
+            ? parsedTool.description.substring(0, 100) + "..."
+            : parsedTool.description}
+        </Text>
+      )}
     </Flex>
   );
 
   return (
     <Card
       title={titleEl}
-      titleExtra={<Counter>#{index + 1}</Counter>}
       {...defaultCardProps}
+      defaultOpen={false}
       backgroundColor="yellow-100"
       borderColor="yellow-700"
       extra={<CopyToClipboardButton text={toolSchema} />}
@@ -1695,7 +1897,53 @@ function LLMToolSchema({
   );
 }
 
-function LLMMessagesList({ messages }: { messages: AttributeMessage[] }) {
+function LLMMessagesList({
+  messages,
+  toolSchemas = [],
+  allMessages,
+  spanOutput,
+}: {
+  messages: AttributeMessage[];
+  toolSchemas?: string[];
+  /** All messages (input + output) for cross-referencing tool results */
+  allMessages?: AttributeMessage[];
+  /** Span output to use when assistant message content is empty */
+  spanOutput?: { mimeType: string; value: string } | null;
+}) {
+  // Find the index after the last system message to insert tools
+  const lastSystemIndex = messages.reduce((lastIdx, msg, idx) => {
+    const role = msg[MessageAttributePostfixes.role]?.toLowerCase();
+    return role === "system" ? idx : lastIdx;
+  }, -1);
+
+  // Build a map of tool_call_id -> tool result content
+  // Search in allMessages (if provided) or messages for tool results
+  const toolResultsMap = useMemo(() => {
+    const map = new Map<string, string>();
+    const messagesToSearch = allMessages || messages;
+    messagesToSearch.forEach((msg) => {
+      const role = msg[MessageAttributePostfixes.role]?.toLowerCase();
+      if (role === "tool") {
+        const toolCallId = msg[MessageAttributePostfixes.tool_call_id];
+        const rawContent = msg[MessageAttributePostfixes.content];
+        // Extract content - it might be a string, JSON string, or object
+        const content = extractMessageContent(rawContent);
+        if (toolCallId && content) {
+          map.set(toolCallId, content);
+        }
+      }
+    });
+    return map;
+  }, [messages, allMessages]);
+
+  // Collect tool calls from assistant messages to display after them
+  const getToolCallsFromMessage = (message: AttributeMessage) => {
+    const toolCalls = message[MessageAttributePostfixes.tool_calls]
+      ?.map((obj) => obj[SemanticAttributePrefixes.tool_call])
+      .filter(Boolean);
+    return toolCalls || [];
+  };
+
   return (
     <ul
       css={css`
@@ -1706,36 +1954,115 @@ function LLMMessagesList({ messages }: { messages: AttributeMessage[] }) {
       `}
     >
       {messages.map((message, idx) => {
+        const role = message[MessageAttributePostfixes.role]?.toLowerCase();
+        const showToolsAfterThis = idx === lastSystemIndex && toolSchemas.length > 0;
+
+        // Skip tool messages - they are merged with tool calls
+        if (role === "tool") {
+          return null;
+        }
+
+        const toolCalls = getToolCallsFromMessage(message);
+        const hasToolCalls = toolCalls.length > 0;
+
+        // Pass spanOutput to assistant messages to show LLM output when content is empty
+        const isAssistant = role === "assistant";
+
         return (
-          <li key={idx}>
-            <LLMMessage message={message} />
-          </li>
+          <Fragment key={idx}>
+            <li>
+              <LLMMessage
+                message={message}
+                hideToolCalls
+                fallbackContent={isAssistant ? spanOutput?.value : undefined}
+              />
+            </li>
+            {showToolsAfterThis && (
+              <li>
+                <LLMToolsCard toolSchemas={toolSchemas} />
+              </li>
+            )}
+            {/* Show merged tool calls with results after assistant message */}
+            {hasToolCalls &&
+              toolCalls.map((toolCall, tcIdx) => {
+                if (!toolCall) return null;
+                const toolCallId = toolCall.id;
+                const toolResult = toolCallId
+                  ? toolResultsMap.get(toolCallId)
+                  : undefined;
+                return (
+                  <li key={`tool-${idx}-${tcIdx}`}>
+                    <ToolCallWithResult
+                      toolCall={toolCall}
+                      toolResult={toolResult}
+                    />
+                  </li>
+                );
+              })}
+          </Fragment>
         );
       })}
+      {/* If no system message, show tools at the beginning */}
+      {lastSystemIndex === -1 && toolSchemas.length > 0 && (
+        <li style={{ order: -1 }}>
+          <LLMToolsCard toolSchemas={toolSchemas} />
+        </li>
+      )}
     </ul>
   );
 }
 
-function LLMToolSchemasList({ toolSchemas }: { toolSchemas: string[] }) {
+function LLMToolsCard({ toolSchemas }: { toolSchemas: string[] }) {
+  // Extract tool names for preview
+  const toolNamesPreview = useMemo(() => {
+    const names = toolSchemas.map((schema, idx) => {
+      try {
+        const parsed = JSON.parse(schema);
+        return parsed?.name || parsed?.function?.name || `Tool #${idx + 1}`;
+      } catch {
+        return `Tool #${idx + 1}`;
+      }
+    });
+    const joined = names.join(", ");
+    return joined.length > 100 ? joined.substring(0, 100) + "..." : joined;
+  }, [toolSchemas]);
+
   return (
-    <ul
-      css={css`
-        display: flex;
-        flex-direction: column;
-        gap: var(--ac-global-dimension-static-size-100);
-        padding: var(--ac-global-dimension-static-size-200);
-      `}
+    <Card
+      {...defaultCardProps}
+      defaultOpen={false}
+      backgroundColor="yellow-100"
+      borderColor="yellow-700"
+      title={
+        <Flex direction="row" gap="size-100" alignItems="center">
+          <SpanKindIcon spanKind="tool" />
+          <Text weight="heavy">Tools</Text>
+          {toolNamesPreview && (
+            <span style={{ fontWeight: "normal", opacity: 0.7 }}>
+              {toolNamesPreview}
+            </span>
+          )}
+        </Flex>
+      }
     >
-      {toolSchemas.map((toolSchema, idx) => {
-        return (
+      <ul
+        css={css`
+          display: flex;
+          flex-direction: column;
+          gap: var(--ac-global-dimension-static-size-100);
+          padding: var(--ac-global-dimension-static-size-200);
+        `}
+      >
+        {toolSchemas.map((toolSchema, idx) => (
           <li key={idx}>
             <LLMToolSchema toolSchema={toolSchema} index={idx} />
           </li>
-        );
-      })}
-    </ul>
+        ))}
+      </ul>
+    </Card>
   );
 }
+
 
 function LLMPromptsList({ prompts }: { prompts: string[] }) {
   return (

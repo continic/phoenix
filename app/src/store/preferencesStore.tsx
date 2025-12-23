@@ -193,7 +193,7 @@ export const createPreferencesStore = (
         type: "setPlaygroundStreamingEnabled",
       });
     },
-    isAnnotatingSpans: true,
+    isAnnotatingSpans: false,
     setIsAnnotatingSpans: (isAnnotatingSpans) => {
       set({ isAnnotatingSpans }, false, { type: "setIsAnnotatingSpans" });
     },
@@ -227,6 +227,12 @@ export const createPreferencesStore = (
   return create<PreferencesState>()(
     persist(devtools(preferencesStore, { name: "preferencesStore" }), {
       name: "arize-phoenix-preferences",
+      // Exclude isAnnotatingSpans from persistence - always start with it closed
+      partialize: (state) => {
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        const { isAnnotatingSpans, ...rest } = state;
+        return rest;
+      },
     })
   );
 };
