@@ -270,6 +270,38 @@ export function SpanDetails({
     return spanHasException(span);
   }, [span]);
 
+  // Extract request_id from metadata for Railway logs link
+  const requestId = useMemo<string | null>(() => {
+    try {
+      const attrs = JSON.parse(span.attributes);
+      return attrs?.metadata?.request_id || null;
+    } catch {
+      return null;
+    }
+  }, [span.attributes]);
+
+  const railwayLogsUrl = useMemo<string | null>(() => {
+    if (!requestId) return null;
+    const projectId = "575cf0bb-62e9-465e-9e7c-239b6176f3e5";
+    const environmentId = "cafb29eb-8f16-4bc6-a44c-d95a635f3e82";
+    const filter = encodeURIComponent(
+      `@service:"api" AND @request_id:"${requestId}"`
+    );
+
+    // Calculate time range: start = spanStartTime - 5min, end = spanStartTime + 25min
+    const spanStartTime = new Date(span.startTime).getTime();
+    const startTime = spanStartTime - 5 * 60 * 1000; // 5 minutes before
+    const endTime = spanStartTime + 25 * 60 * 1000; // 25 minutes after
+
+    // Format start time as YYYY/MM/DD HH:mm:ss
+    const startDate = new Date(startTime);
+    const startText = encodeURIComponent(
+      `${startDate.getFullYear()}/${String(startDate.getMonth() + 1).padStart(2, "0")}/${String(startDate.getDate()).padStart(2, "0")} ${String(startDate.getHours()).padStart(2, "0")}:${String(startDate.getMinutes()).padStart(2, "0")}:${String(startDate.getSeconds()).padStart(2, "0")}`
+    );
+
+    return `https://railway.com/project/${projectId}/logs?environmentId=${environmentId}&filter=${filter}&start=${startTime}&startText=${startText}&end=${endTime}&endText=30m`;
+  }, [requestId, span.startTime]);
+
   return (
     <PanelGroup direction="horizontal" autoSaveId="span-details-layout">
       <Panel order={1}>
@@ -298,6 +330,17 @@ export function SpanDetails({
                 alignItems="center"
                 gap="size-100"
               >
+                {railwayLogsUrl && (
+                  <Button
+                    variant="default"
+                    leadingVisual={<Icon svg={<Icons.FileOutline />} />}
+                    size="S"
+                    aria-label="View Logs"
+                    onPress={() => window.open(railwayLogsUrl, "_blank")}
+                  >
+                    {isCondensedView ? null : "日志查看"}
+                  </Button>
+                )}
                 <LinkButton
                   variant={span.spanKind !== "llm" ? "default" : "primary"}
                   leadingVisual={<Icon svg={<Icons.PlayCircleOutline />} />}
@@ -578,6 +621,66 @@ function LLMSpanInfo(props: { span: Span; spanAttributes: AttributeObject }) {
   }, [llmAttributes]);
 
   const inputMessages = useMemo<AttributeMessage[]>(() => {
+    // Priority 1: Try ai.prompt.messages (Vercel AI SDK format - JSON string)
+    const attrs = spanAttributes as Record<string, unknown>;
+    const ai = attrs["ai"] as Record<string, unknown> | undefined;
+    const prompt = ai?.["prompt"] as Record<string, unknown> | undefined;
+    const aiPromptMessages = prompt?.["messages"];
+
+    if (typeof aiPromptMessages === "string") {
+      try {
+        const parsed = JSON.parse(aiPromptMessages);
+        if (Array.isArray(parsed)) {
+          // Convert to AttributeMessage format
+          // ai.prompt.messages format: [{role, content, ...}]
+          // Need to wrap in message attribute format
+          return parsed.map((msg) => {
+            // Extract tool calls from content array (Vercel AI SDK format)
+            // Format: {type: "tool-call", toolCallId, toolName, input}
+            let toolCalls: Array<{
+              [SemanticAttributePrefixes.tool_call]: AttributeToolCall;
+            }> | undefined;
+
+            if (Array.isArray(msg.content)) {
+              const toolCallItems = msg.content.filter(
+                (item: { type?: string }) => item?.type === "tool-call"
+              );
+              if (toolCallItems.length > 0) {
+                toolCalls = toolCallItems.map(
+                  (tc: {
+                    toolCallId?: string;
+                    toolName?: string;
+                    input?: unknown;
+                  }) => ({
+                    [SemanticAttributePrefixes.tool_call]: {
+                      id: tc.toolCallId,
+                      function: {
+                        name: tc.toolName,
+                        arguments:
+                          typeof tc.input === "string"
+                            ? tc.input
+                            : JSON.stringify(tc.input),
+                      },
+                    },
+                  })
+                );
+              }
+            }
+
+            return {
+              [MessageAttributePostfixes.role]: msg.role,
+              [MessageAttributePostfixes.content]: msg.content,
+              [MessageAttributePostfixes.tool_call_id]: msg.toolCallId,
+              [MessageAttributePostfixes.tool_calls]: toolCalls,
+            };
+          }) as AttributeMessage[];
+        }
+      } catch {
+        // Not valid JSON, fall through to llm.input_messages
+      }
+    }
+
+    // Priority 2: Fall back to llm.input_messages (OpenInference format)
     if (llmAttributes == null) {
       return [];
     }
@@ -592,7 +695,7 @@ function LLMSpanInfo(props: { span: Span; spanAttributes: AttributeObject }) {
     return (inputMessagesValue
       ?.map((obj) => obj[SemanticAttributePrefixes.message])
       .filter(Boolean) || []) as AttributeMessage[];
-  }, [llmAttributes]);
+  }, [llmAttributes, spanAttributes]);
 
   const llmTools = useMemo<AttributeLLMToolDefinition[]>(() => {
     if (llmAttributes == null) {
@@ -635,6 +738,57 @@ function LLMSpanInfo(props: { span: Span; spanAttributes: AttributeObject }) {
   }, [llmToolSchemas, aiPromptTools]);
 
   const outputMessages = useMemo<AttributeMessage[]>(() => {
+    // Priority 1: Try ai.response (Vercel AI SDK format)
+    // Structure: { id, text, model, timestamp, toolCalls (JSON string), finishReason }
+    const attrs = spanAttributes as Record<string, unknown>;
+    const ai = attrs["ai"] as Record<string, unknown> | undefined;
+    const response = ai?.["response"] as Record<string, unknown> | undefined;
+
+    if (response && (response.text || response.toolCalls)) {
+      // Convert single response to assistant message
+      let toolCalls: Array<{
+        [SemanticAttributePrefixes.tool_call]: AttributeToolCall;
+      }> | undefined;
+
+      // Parse toolCalls from JSON string
+      if (typeof response.toolCalls === "string") {
+        try {
+          const parsedToolCalls = JSON.parse(response.toolCalls);
+          if (Array.isArray(parsedToolCalls) && parsedToolCalls.length > 0) {
+            toolCalls = parsedToolCalls.map(
+              (tc: {
+                toolCallId?: string;
+                toolName?: string;
+                input?: unknown;
+              }) => ({
+                [SemanticAttributePrefixes.tool_call]: {
+                  id: tc.toolCallId,
+                  function: {
+                    name: tc.toolName,
+                    arguments:
+                      typeof tc.input === "string"
+                        ? tc.input
+                        : JSON.stringify(tc.input),
+                  },
+                },
+              })
+            );
+          }
+        } catch {
+          // Invalid JSON, ignore toolCalls
+        }
+      }
+
+      const assistantMessage: AttributeMessage = {
+        [MessageAttributePostfixes.role]: "assistant",
+        [MessageAttributePostfixes.content]: response.text as string,
+        [MessageAttributePostfixes.tool_calls]: toolCalls,
+      };
+
+      return [assistantMessage];
+    }
+
+    // Priority 2: Fall back to llm.output_messages (OpenInference format)
     if (llmAttributes == null) {
       return [];
     }
@@ -648,7 +802,7 @@ function LLMSpanInfo(props: { span: Span; spanAttributes: AttributeObject }) {
     return (outputMessagesValue
       .map((obj) => obj[SemanticAttributePrefixes.message])
       .filter(Boolean) || []) as AttributeMessage[];
-  }, [llmAttributes]);
+  }, [llmAttributes, spanAttributes]);
 
   // Combine input and output messages for cross-referencing tool results
   const allMessages = useMemo<AttributeMessage[]>(() => {
@@ -1921,15 +2075,109 @@ function LLMMessagesList({
   const toolResultsMap = useMemo(() => {
     const map = new Map<string, string>();
     const messagesToSearch = allMessages || messages;
+
+    // Helper to extract tool results from content array
+    const extractToolResults = (contentArray: unknown[]) => {
+      contentArray.forEach((item) => {
+        if (
+          item &&
+          typeof item === "object" &&
+          "type" in item &&
+          (item as { type: string }).type === "tool-result" &&
+          "toolCallId" in item
+        ) {
+          const toolCallId = (item as { toolCallId: string }).toolCallId;
+          const output = (item as { output?: unknown }).output;
+          let resultContent: string | undefined;
+
+          if (output && typeof output === "object" && "value" in output) {
+            const value = (output as { value: unknown }).value;
+            resultContent =
+              typeof value === "string"
+                ? value
+                : JSON.stringify(value, null, 2);
+          } else if (output) {
+            resultContent =
+              typeof output === "string"
+                ? output
+                : JSON.stringify(output, null, 2);
+          }
+
+          if (toolCallId && resultContent) {
+            map.set(toolCallId, resultContent);
+          }
+        }
+      });
+    };
+
+    // Helper to parse content string or use array directly
+    const parseContentArray = (rawContent: unknown): unknown[] | null => {
+      if (typeof rawContent === "string") {
+        try {
+          const parsed = JSON.parse(rawContent);
+          if (Array.isArray(parsed)) {
+            return parsed;
+          }
+        } catch {
+          // Not JSON array
+        }
+      } else if (Array.isArray(rawContent)) {
+        return rawContent;
+      }
+      return null;
+    };
+
     messagesToSearch.forEach((msg) => {
       const role = msg[MessageAttributePostfixes.role]?.toLowerCase();
       if (role === "tool") {
-        const toolCallId = msg[MessageAttributePostfixes.tool_call_id];
+        // Try content (singular) first
         const rawContent = msg[MessageAttributePostfixes.content];
-        // Extract content - it might be a string, JSON string, or object
-        const content = extractMessageContent(rawContent);
-        if (toolCallId && content) {
-          map.set(toolCallId, content);
+        let contentArray = parseContentArray(rawContent);
+
+        // Also try contents (plural) - used for multi-part messages
+        if (!contentArray) {
+          const rawContents = msg[MessageAttributePostfixes.contents];
+          if (Array.isArray(rawContents)) {
+            // contents is an array of {message_content: {...}} objects
+            rawContents.forEach((item) => {
+              const mc = item?.message_content as {
+                type?: string;
+                toolCallId?: string;
+                output?: unknown;
+              } | undefined;
+              if (mc?.type === "tool-result" && mc?.toolCallId) {
+                const output = mc.output;
+                let resultContent: string | undefined;
+                if (output && typeof output === "object" && "value" in output) {
+                  const value = (output as { value: unknown }).value;
+                  resultContent =
+                    typeof value === "string"
+                      ? value
+                      : JSON.stringify(value, null, 2);
+                } else if (output) {
+                  resultContent =
+                    typeof output === "string"
+                      ? output
+                      : JSON.stringify(output, null, 2);
+                }
+                if (mc.toolCallId && resultContent) {
+                  map.set(mc.toolCallId, resultContent);
+                }
+              }
+            });
+          }
+        }
+
+        // Handle array format with tool-result items (Vercel AI SDK format)
+        if (contentArray) {
+          extractToolResults(contentArray);
+        } else if (!contentArray) {
+          // Fallback: use message-level tool_call_id
+          const toolCallId = msg[MessageAttributePostfixes.tool_call_id];
+          const content = extractMessageContent(rawContent);
+          if (toolCallId && content) {
+            map.set(toolCallId, content);
+          }
         }
       }
     });
